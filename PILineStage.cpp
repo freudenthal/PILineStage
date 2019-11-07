@@ -8,25 +8,26 @@ const uint32_t PILineStage::CommandReplyTimeMax = 250000;
 const uint32_t PILineStage::TimeToCompleteDefault = 100000;
 const uint8_t PILineStage::RetryCountMax = 8;
 const uint32_t PILineStage::WipeInputEvery = 100000;
+const uint32_t PILineStage::PollTimeMax = 100000;
 const PILineStage::CommandStruct PILineStage::CommandLibrary[] =
 {
 	{CommandType::None,"",CommandCategoryType::None,CommandParameterType::None,CommandReplyType::None,false},
 	{CommandType::RequestStatus,"\x04",CommandCategoryType::SingleCharacter,CommandParameterType::None,CommandReplyType::StatusRegister,false},
 	{CommandType::RequestMotion,"\x05",CommandCategoryType::SingleCharacter,CommandParameterType::None,CommandReplyType::MotionStatus,false},
 	{CommandType::RequestReady,"\x07",CommandCategoryType::SingleCharacter,CommandParameterType::None,CommandReplyType::ReadyStatus,false},
-	{CommandType::StopAll,"\x18",CommandCategoryType::SingleCharacter,CommandParameterType::None,CommandReplyType::None,false},
+	{CommandType::Stop,"\x18",CommandCategoryType::SingleCharacter,CommandParameterType::None,CommandReplyType::None,false},
 	{CommandType::Acceleration,"ACC",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,false},
 	{CommandType::Deceleration,"DEC",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,false},
-	{CommandType::DefineHome,"DFH",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,false},
+	{CommandType::DefineHome,"DFH",CommandCategoryType::GetSet,CommandParameterType::Index,CommandReplyType::IndexFloat,false},
 	{CommandType::RequestError,"ERR",CommandCategoryType::Get,CommandParameterType::None,CommandReplyType::ErrorStatus,false},
-	{CommandType::FastReference,"FRF",CommandCategoryType::GetSet,CommandParameterType::Index,CommandReplyType::IndexBool,true},
+	{CommandType::FastReference,"FRF",CommandCategoryType::GetSet,CommandParameterType::Index,CommandReplyType::None,true},
 	{CommandType::GoHome,"GOH",CommandCategoryType::Set,CommandParameterType::Index,CommandReplyType::None,true},
 	{CommandType::Halt,"HLT",CommandCategoryType::Set,CommandParameterType::Index,CommandReplyType::None,true},
-	{CommandType::Move,"MOV",CommandCategoryType::SetGet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,true},
+	{CommandType::Move,"MOV",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,true},
 	{CommandType::OnTarget,"ONT",CommandCategoryType::Get,CommandParameterType::Index,CommandReplyType::IndexBool,false},
 	{CommandType::Position,"POS",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,false},
 	{CommandType::StopAll,"STP",CommandCategoryType::Set,CommandParameterType::None,CommandReplyType::None,false},
-	{CommandType::ServoMode,"SVO",CommandCategoryType::GetSet,CommandParameterType::IndexBool,CommandReplyType::IndexBool,false},
+	{CommandType::ServoMode,"SVO",CommandCategoryType::GetSet,CommandParameterType::IndexBool,CommandReplyType::None,false},
 	{CommandType::PositionMin,"TMN",CommandCategoryType::Get,CommandParameterType::Index,CommandReplyType::IndexFloat,false},
 	{CommandType::PositionMax,"TMX",CommandCategoryType::Get,CommandParameterType::Index,CommandReplyType::IndexFloat,false},
 	{CommandType::Velocity,"VEL",CommandCategoryType::GetSet,CommandParameterType::IndexFloat,CommandReplyType::IndexFloat,false},
@@ -36,15 +37,22 @@ PILineStage::PILineStage(HardwareSerial *serial, int BaudRate)
 {
 	SerialPort = serial;
 	SerialPort->begin(BaudRate, SERIAL_8N1);
-	RecievedCallback = NULL;
-	CurrentCommand = NULL;
-	CurrentCommandParameter = 0;
+	FinishedCallback = NULL;
+	HomedCallback = NULL;
+	Axis1Callback = NULL;
+	Axis2Callback = NULL;
 	CurrentCommandTimeToComplete = 0;
 	ReplyByteCount = 0;
 	for (uint8_t Index = 0; Index < PILineReplyBufferCount; ++Index)
 	{
 		ReplyData[Index] = 0;
 	}
+	CurrentCommand.Command = CommandType::None;
+	CurrentCommand.CommandFormat = NULL;
+	//CurrentCommand.PollStatus = false;
+	CurrentCommand.Get = false;
+	CurrentCommand.Axis = 0;
+	CurrentCommand.Parameter.IntegerValue = 0;
 	ClearCommandQueue();
 	Mode = ModeType::Inactive;
 	Busy = false;
@@ -56,7 +64,17 @@ PILineStage::PILineStage(HardwareSerial *serial, int BaudRate)
 	CommandRetryCount = 0;
 	MotionByte = 255;
 	IsHomed = false;
-	PollAfterQueueEmpty = false;
+	IsHoming = false;
+	Status1 = 0;
+	Status2 = 0;
+	Position1 = 0.0;
+	Position2 = 0.0;
+	CheckForErrors = true;
+	PositionMin1 = 0.0;
+	PositionMin2 = 0.0;
+	PositionMax1 = 0.0;
+	PositionMax2 = 0.0;
+	//PollAfterQueueEmpty = false;
 }
 void PILineStage::Begin()
 {
@@ -65,13 +83,22 @@ void PILineStage::Begin()
 }
 void PILineStage::Home()
 {
+	Axis1Moving = true;
+	Axis2Moving = true;
+	IsHomed = false;
+	IsHoming = true;
 	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::RequestError;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = true;
+	//CommandToQueue.PollStatus = false;
+	Enqueue(CommandToQueue);
 	CommandToQueue.Command = CommandType::ServoMode;
 	CommandToQueue.CommandFormat = NULL;
 	CommandToQueue.Get = false;
 	CommandToQueue.Axis = 1;
-	CommandToQueue.Parameter = true;
-	CommandToQueue.PollAfter = false;
+	CommandToQueue.Parameter.BoolValue = true;
+	//CommandToQueue.PollStatus = false;
 	Enqueue(CommandToQueue);
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
@@ -84,12 +111,122 @@ void PILineStage::Home()
 	CommandToQueue.Axis = 1;
 	Enqueue(CommandToQueue);
 	CommandToQueue.Axis = 2;
-	CommandToQueue.PollAfter = true;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::PositionMin;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = 1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Axis = 2;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::PositionMax;
+	CommandToQueue.Axis = 1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
 }
-void PILineStage::SetRecievedCallback(FinishedListener Finished)
+void PILineStage::CenterStage()
 {
-	RecievedCallback = Finished;
+	/*
+	Serial.print("<PISTAGE>(");
+	Serial.print(PositionMin1);
+	Serial.print(",");
+	Serial.print(PositionMax1);
+	Serial.print(",");
+	Serial.print(PositionMin2);
+	Serial.print(",");
+	Serial.print(PositionMax2);
+	Serial.print(")\n");
+	*/
+	float Center1 = (PositionMax1 - PositionMin1)/2.0;
+	float Center2 = (PositionMax2 - PositionMin2)/2.0;
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::Move;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = false;
+	CommandToQueue.Axis = 1;
+	CommandToQueue.Parameter.FloatValue = Center1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Axis = 2;
+	CommandToQueue.Parameter.FloatValue = Center2;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::DefineHome;
+	CommandToQueue.Axis = 1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::DefineHome;
+	CommandToQueue.Axis = 2;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::Position;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = 1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Axis = 2;
+	Enqueue(CommandToQueue);
+}
+bool PILineStage::SendGetPosition(uint8_t Axis)
+{
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::Position;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = Axis;
+	CommandToQueue.Parameter.BoolValue = false;
+	//CommandToQueue.PollStatus = false;
+	Enqueue(CommandToQueue);
+	return true;
+}
+float PILineStage::GetPosition(uint8_t Axis)
+{
+	if (Axis == 1)
+	{
+		return Position1;
+	}
+	else if (Axis == 2)
+	{
+		return Position2;
+	}
+	else
+	{
+		return 0;
+	}
+}
+bool PILineStage::SendMoveAbs(uint8_t Axis, float Position)
+{
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::Move;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = false;
+	CommandToQueue.Axis = Axis;
+	CommandToQueue.Parameter.FloatValue = Position;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::Position;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = Axis;
+	Enqueue(CommandToQueue);
+	if (Axis == 1)
+	{
+		Axis1Moving = true;
+	}
+	if (Axis == 2)
+	{
+		Axis2Moving = true;
+	}
+	return true;
+}
+void PILineStage::SetFinishedCallback(FinishedListener Callback)
+{
+	FinishedCallback = Callback;
+}
+void PILineStage::SetHomedCallback(FinishedListener Callback)
+{
+	HomedCallback = Callback;
+}
+void PILineStage::SetAxis1Callback(FinishedListener Callback)
+{
+	Axis1Callback = Callback;
+}
+void PILineStage::SetAxis2Callback(FinishedListener Callback)
+{
+	Axis2Callback = Callback;
 }
 void PILineStage::Check()
 {
@@ -101,10 +238,17 @@ void PILineStage::Check()
 		case ModeType::SendMovePoll:
 			SendMovePoll();
 			break;
-		case ModeType::SendMovePoll:
+		case ModeType::RecieveMovePoll:
 			CheckForMoveComplete();
+			break;
 		case ModeType::WaitForReply:
 			CheckForCommandReply();
+			break;
+		case ModeType::SendErrorPoll:
+			SendErrorPoll();
+			break;
+		case ModeType::ReceiveErrorPoll:
+			CheckForErrorComplete();
 			break;
 		default:
 			break;
@@ -112,18 +256,36 @@ void PILineStage::Check()
 }
 void PILineStage::SendMovePoll()
 {
-	MotionByte = 255;
-	SerialPort->write('\x04');
-	SerialPort->write(EndOfLineCharacter);
-	LastCommandSentTime = micros();
-	ModeTransitionToRecieveMovePoll();
+	if (micros() - PollTime > PollTimeMax)
+	{
+		PollTime = micros();
+		MotionByte = 255;
+		SerialPort->write('\x05');
+		SerialPort->write(EndOfLineCharacter);
+		//Serial.print('\x05');
+		//Serial.print(EndOfLineCharacter);
+		LastCommandSentTime = micros();
+		ModeTransitionToRecieveMovePoll();
+	}
+}
+void PILineStage::SendErrorPoll()
+{
+	if (micros() - PollTime > PollTimeMax)
+	{
+		PollTime = micros();
+		ErrorCode = 0xFFFFFFFF;
+		SerialPort->print("ERR?");
+		SerialPort->print(EndOfLineCharacter);
+		LastCommandSentTime = micros();
+		ModeTransitionToReceiveErrors();
+	}
 }
 void PILineStage::CheckCommandQueue()
 {
 	bool NewCommandPulled = CommandQueuePullToCurrentCommand();
 	if (NewCommandPulled)
 	{
-		if (CurrentCommand != NULL)
+		if ( (CurrentCommand.Command != CommandType::None) || (CurrentCommand.Command != CommandType::Count) )
 		{
 			Busy = true;
 			SendCommand();
@@ -150,7 +312,7 @@ void PILineStage::Enqueue(CommandQueueEntry CommandToQueue)
 {
 	CommandToQueue.CommandFormat = const_cast<CommandStruct*>(&CommandLibrary[static_cast<uint8_t>(CommandToQueue.Command)]);
 	CommandToQueue.Axis = constrain(CommandToQueue.Axis,0,3);
-	PILineStage::CommandQueuePut(CommandToQueue);
+	CommandQueuePut(CommandToQueue);
 }
 void PILineStage::ClearCommandQueue()
 {
@@ -160,8 +322,8 @@ void PILineStage::ClearCommandQueue()
 		CommandQueue[Index].CommandFormat = NULL;
 		CommandQueue[Index].Get = false;
 		CommandQueue[Index].Axis = 0;
-		CommandQueue[Index].Parameter = 0;
-		CommandQueue[Index].PollAfter = false;
+		CommandQueue[Index].Parameter.IntegerValue = 0;
+		//CommandQueue[Index].PollStatus = false;
 	}
 	CommandQueueHead = 0;
 	CommandQueueTail = 0;
@@ -212,7 +374,7 @@ void PILineStage::CommandQueuePut(CommandQueueEntry NewCommand)
 	CommandQueue[CommandQueueHead].Get = NewCommand.Get;
 	CommandQueue[CommandQueueHead].Axis = NewCommand.Axis;
 	CommandQueue[CommandQueueHead].Parameter = NewCommand.Parameter;
-	CommandQueue[CommandQueueHead].PollStatus = NewCommand.PollStatus;
+	//CommandQueue[CommandQueueHead].PollStatus = NewCommand.PollStatus;
 	CommandQueueAdvance();
 }
 bool PILineStage::CommandQueuePullToCurrentCommand()
@@ -225,7 +387,7 @@ bool PILineStage::CommandQueuePullToCurrentCommand()
 		CurrentCommand.Get = CommandQueue[CommandQueueTail].Get;
 		CurrentCommand.Axis = CommandQueue[CommandQueueTail].Axis;
 		CurrentCommand.Parameter = CommandQueue[CommandQueueTail].Parameter;
-		CurrentCommand.PollStatus = CommandQueue[CommandQueueHead].PollStatus;
+		//CurrentCommand.PollStatus = CommandQueue[CommandQueueHead].PollStatus;
 		CommandQueueRetreat();
 		Status = true;
 	}
@@ -261,10 +423,19 @@ void PILineStage::CheckForCommandReply()
 		ModeTransitionToIdle();
 	}
 }
+bool PILineStage::GetIsHomed()
+{
+	return IsHomed;
+}
+bool PILineStage::GetIsHoming()
+{
+	return IsHoming;
+}
 void PILineStage::CheckForMoveComplete()
 {
-	if (SerialPort->available())
+	if ( (micros() - PollTime > PollTimeMax) && (SerialPort->available()) )
 	{
+		PollTime = micros();
 		while(SerialPort->available())
 		{
 			char NewCharacter = SerialPort->read();
@@ -272,9 +443,12 @@ void PILineStage::CheckForMoveComplete()
 			{
 				ReplyData[ReplyByteCount] = NewCharacter;
 				ReplyByteCount++;
-				if (ReplyByteCount >= 1)
+				if (ReplyByteCount > 2)
 				{
-					Serial.print("<PISTAGE>(Reply buffer overflow.)\n");
+					Serial.print("<PISTAGE>(Move polling buffer overflow.)\n");
+					ReplyData[ReplyByteCount]='\0';
+					//Serial.print(ReplyData);
+					//Serial.print("\n");
 					ReplyByteCount = 0;
 				}
 			}
@@ -282,17 +456,14 @@ void PILineStage::CheckForMoveComplete()
 			{
 				if (ReplyData[0] == '0')
 				{
-					PollAfterQueueEmpty = false;
+					//PollAfterQueueEmpty = false;
+					//Serial.print("<PISTAGE>(Move complete.)");
 					ModeTransitionToIdle();
-				}
-				else if (ReplyData[0] == '1')
-				{
-					ModeTransitionToSendMovePoll();
 				}
 				else
 				{
-					Serial.print("<PISTAGE>(Unexpected reply on movement polling.)\n");
-					ModeTransitionToIdle();
+					//Serial.print("<PISTAGE>(Moving.)");
+					ModeTransitionToSendMovePoll();
 				}
 			}
 		}
@@ -303,11 +474,51 @@ void PILineStage::CheckForMoveComplete()
 		ModeTransitionToIdle();
 	}
 }
+void PILineStage::CheckForErrorComplete()
+{
+	if ( (micros() - PollTime > PollTimeMax) && (SerialPort->available()) )
+	{
+		PollTime = micros();
+		while(SerialPort->available())
+		{
+			char NewCharacter = SerialPort->read();
+			if (NewCharacter != EndOfLineCharacter)
+			{
+				ReplyData[ReplyByteCount] = NewCharacter;
+				ReplyByteCount++;
+				if (ReplyByteCount > PILineReplyBufferCount)
+				{
+					Serial.print("<PISTAGE>(Error polling buffer overflow.)\n");
+					ReplyData[ReplyByteCount]='\0';
+					//Serial.print(ReplyData);
+					//Serial.print("\n");
+					ReplyByteCount = 0;
+				}
+			}
+			else
+			{
+				ErrorCode = atoi(ReplyData);
+				if (ErrorCode != 0)
+				{
+					Serial.print("<PISTAGE>(Error: ");
+					Serial.print(ErrorCode);
+					Serial.print(")\n");
+				}
+				ModeTransitionToIdle();
+			}
+		}
+	}
+	else if ( (micros() - LastCommandSentTime) > CommandReplyTimeMax)
+	{
+		Serial.print("<PISTAGE>(No error status reply.)\n");
+		ModeTransitionToIdle();
+	}
+}
 void PILineStage::ParseReply()
 {
 	bool Status = false;
 	CommandParameter ReturnParameter;
-	swtich (CurrentCommand.CommandFormat->ReplyType)
+	switch (CurrentCommand.CommandFormat->ReplyType)
 	{
 		case(CommandReplyType::StatusRegister):
 			Status = ParseStatusRegister(&ReturnParameter);
@@ -327,17 +538,66 @@ void PILineStage::ParseReply()
 		case(CommandReplyType::IndexBool):
 			Status = ParseIndexBool(&ReturnParameter);
 			break;
-		case default:
+		default:
 			break;
 	}
-	if (!Status)
+	if (Status)
+	{
+		UpdateInternalVariables(&ReturnParameter);
+	}
+	else
 	{
 		Serial.print("<PISTAGE>(Reply parse failed.)\n");
 	}
 }
+void PILineStage::UpdateInternalVariables(CommandParameter* Parameter)
+{
+	switch(CurrentCommand.Command)
+	{
+		case (CommandType::Move):
+		case (CommandType::Position):
+			{
+				if (CurrentCommand.Axis == 1)
+				{
+					Position1 = Parameter->FloatValue;
+				}
+				else if (CurrentCommand.Axis == 2)
+				{
+					Position2 = Parameter->FloatValue;
+				}
+				break;
+			}
+		case (CommandType::PositionMin):
+			{
+				if (CurrentCommand.Axis == 1)
+				{
+					PositionMin1 = Parameter->FloatValue;
+				}
+				else if (CurrentCommand.Axis == 2)
+				{
+					PositionMin2 = Parameter->FloatValue;
+				}
+				break;
+			}
+			case (CommandType::PositionMax):
+				{
+					if (CurrentCommand.Axis == 1)
+					{
+						PositionMax1 = Parameter->FloatValue;
+					}
+					else if (CurrentCommand.Axis == 2)
+					{
+						PositionMax2 = Parameter->FloatValue;
+					}
+					break;
+				}
+		default:
+			break;
+	}
+}
 bool PILineStage::ParseStatusRegister(CommandParameter* ParameterToWrite)
 {
-	char* Buffer[4];
+	char Buffer[4];
 	bool Status = false;
 	Status &= (ReplyData[0] == '0');
 	Status &= (ReplyData[1] == 'x');
@@ -345,39 +605,37 @@ bool PILineStage::ParseStatusRegister(CommandParameter* ParameterToWrite)
 	if (Status && (ReplyByteCount >= 6))
 	{
 		memcpy(Buffer, ReplyData + 2, 4);
-		Status1 = (uint32t)(atoi(Buffer));
+		Status1 = (uint32_t)(atoi(Buffer));
 	}
 	if (Status && (ReplyByteCount >= 10))
 	{
 		memcpy(Buffer, ReplyData + 6, 4);
-		Status2 = (uint32t)(atoi(Buffer));
-	}
-	if (Status && (ReplyByteCount >= 14))
-	{
-		memcpy(Buffer, ReplyData + 10, 4);
-		Status3 = (uint32t)(atoi(Buffer));
+		Status2 = (uint32_t)(atoi(Buffer));
 	}
 	if (Status == false)
 	{
 		Serial.print("<PISTAGE>(Status reply parse failed.)\n");
 	}
-	ParameterToWrite.IntegerValue = atoi(Buffer);
+	ParameterToWrite->IntegerValue = atoi(Buffer);
+	return Status;
 }
 bool PILineStage::ParseMotionStatus(CommandParameter* ParameterToWrite)
 {
-	char MotionChar = ReplyData[0];
 	MotionByte = atoi(ReplyData);
-	ParameterToWrite.BoolValue = MotionByte == 0;
+	ParameterToWrite->BoolValue = MotionByte == 0;
+	return true;
 }
 bool PILineStage::ParseReadyStatus(CommandParameter* ParameterToWrite)
 {
 	Ready = ReplyData[0] == 241;
-	ParameterToWrite.BoolValue = Ready;
+	ParameterToWrite->BoolValue = Ready;
+	return true;
 }
 bool PILineStage::ParseErrorStatus(CommandParameter* ParameterToWrite)
 {
 	ErrorCode = atoi(ReplyData);
-	ParameterToWrite.IntegerValue = ErrorCode;
+	ParameterToWrite->IntegerValue = ErrorCode;
+	return true;
 }
 bool PILineStage::ParseIndexFloat(CommandParameter* ParameterToWrite)
 {
@@ -385,10 +643,12 @@ bool PILineStage::ParseIndexFloat(CommandParameter* ParameterToWrite)
 	if (EqualSplit == -1)
 	{
 		Serial.print("<PISTAGE>(Unable to find equal in reply parse.)\n");
+		return false;
 	}
 	else
 	{
-		ParameterToWrite.FloatValue = atof(EqualSplit + 1);
+		ParameterToWrite->FloatValue = atof(ReplyData + EqualSplit + 1);
+		return true;
 	}
 }
 bool PILineStage::ParseIndexBool(CommandParameter* ParameterToWrite)
@@ -397,18 +657,20 @@ bool PILineStage::ParseIndexBool(CommandParameter* ParameterToWrite)
 	if (EqualSplit == -1)
 	{
 		Serial.print("<PISTAGE>(Unable to find equal in reply parse.)\n");
+		return false;
 	}
 	else
 	{
-		uint8_t Value = atoi(EqualSplit + 1);
+		uint8_t Value = atoi(ReplyData + EqualSplit + 1);
 		if (Value == 1)
 		{
-			ParameterToWrite.BoolValue = true;
+			ParameterToWrite->BoolValue = true;
 		}
 		else
 		{
-			ParameterToWrite.BoolValue = false;
+			ParameterToWrite->BoolValue = false;
 		}
+		return true;
 	}
 }
 int16_t PILineStage::IndexOf(char* CharArray, char ToFind, uint8_t Limit)
@@ -438,6 +700,7 @@ void PILineStage::ModeTransitionToSendMovePoll()
 }
 void PILineStage::ModeTransitionToRecieveMovePoll()
 {
+	PollTime = micros();
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::RecieveMovePoll;
@@ -448,22 +711,45 @@ void PILineStage::ModeTransitionToWaitForReply()
 	ReplyByteCount = 0;
 	Mode = ModeType::WaitForReply;
 }
+void PILineStage::ModeTransitionToCheckErrors()
+{
+	PollTime = micros();
+	memset(ReplyData, '\0', PILineReplyBufferCount);
+	ReplyByteCount = 0;
+	Mode = ModeType::SendErrorPoll;
+}
+void PILineStage::ModeTransitionToReceiveErrors()
+{
+	PollTime = micros();
+	memset(ReplyData, '\0', PILineReplyBufferCount);
+	ReplyByteCount = 0;
+	Mode = ModeType::ReceiveErrorPoll;
+}
 void PILineStage::ModeTransitionToIdle()
 {
 	if (CommandQueueEmpty())
 	{
-		if (PollAfterQueueEmpty)
+		if (CheckForErrors)
 		{
-			ModeTransitionToSendMovePoll();
+			CheckForErrors = false;
+			ModeTransitionToCheckErrors();
 		}
 		else
 		{
-			Busy = false;
-			if (RecievedCallback != NULL)
+			if (IsHoming)
 			{
-				RecievedCallback();
+				CheckForErrors = true;
+				IsHoming = false;
+				CenterStage();
+				Mode = ModeType::Idle;
 			}
-			Mode = ModeType::Idle;
+			else
+			{
+				CheckForErrors = true;
+				Busy = false;
+				FireCallbacks();
+				Mode = ModeType::Idle;
+			}
 		}
 	}
 	else
@@ -471,19 +757,48 @@ void PILineStage::ModeTransitionToIdle()
 		Mode = ModeType::Idle;
 	}
 }
+void PILineStage::FireCallbacks()
+{
+	if (!IsHomed)
+	{
+		IsHomed = true;
+		if (HomedCallback != NULL)
+		{
+			HomedCallback();
+		}
+	}
+	if (Axis1Moving)
+	{
+		Axis1Moving = false;
+		if (Axis1Callback != NULL)
+		{
+			Axis1Callback();
+		}
+	}
+	if (Axis2Moving)
+	{
+		Axis2Moving = false;
+		if (Axis2Callback != NULL)
+		{
+			Axis2Callback();
+		}
+	}
+	if (FinishedCallback != NULL)
+	{
+		FinishedCallback();
+	}
+}
 bool PILineStage::IsBusy()
 {
 	return Busy;
 }
-bool PILineStage::SendCommand()
+void PILineStage::SendCommand()
 {
-	bool Status = true;
-	char* OutputBuffer[PILineReplyBufferCount];
+	char OutputBuffer[PILineReplyBufferCount];
 	uint8_t OutputBufferIndex = 0;
 	if ( (CurrentCommand.Command == CommandType::None) || (CurrentCommand.Command == CommandType::Count) )
 	{
 		Serial.print("<MONOERROR>(Invalid command in buffer.)\n");
-		Status = false;
 	}
 	else if (CurrentCommand.CommandFormat->Category == CommandCategoryType::SingleCharacter)
 	{
@@ -506,12 +821,12 @@ bool PILineStage::SendCommand()
 		(CurrentCommand.CommandFormat->SendType == CommandParameterType::IndexFloat) ||
 		(CurrentCommand.CommandFormat->SendType == CommandParameterType::IndexInteger) ||
 		(CurrentCommand.CommandFormat->SendType == CommandParameterType::IndexBool)
-	)
+	);
 	if (HasIndex)
 	{
 		OutputBuffer[OutputBufferIndex] = SpaceCharacter;
 		OutputBufferIndex++;
-		switch (CurrentCommand.Axis):
+		switch (CurrentCommand.Axis)
 		{
 			case 0:
 				OutputBuffer[OutputBufferIndex] = '0';
@@ -531,33 +846,34 @@ bool PILineStage::SendCommand()
 		}
 		OutputBufferIndex++;
 	}
-	if (CurrentCommand.CommandFormat->SendType != CommandParameterType::None)
+	if ( (CurrentCommand.CommandFormat->SendType != CommandParameterType::None) && !CurrentCommand.Get)
 	{
 		OutputBuffer[OutputBufferIndex] = SpaceCharacter;
 		OutputBufferIndex++;
-		switch (CurrentCommand.CommandFormat->SendType):
+		switch (CurrentCommand.CommandFormat->SendType)
 		{
 			case CommandParameterType::Float:
 			case CommandParameterType::IndexFloat:
-				OutputBufferIndex += sprintf(OutputBuffer + OutputBufferIndex,"%4.6f",CurrentCommand.Parameter.FloatValue);
+				OutputBufferIndex += sprintf(OutputBuffer + OutputBufferIndex,"%4.6f",(float)(CurrentCommand.Parameter.FloatValue));
 				break;
-			case CommandParameterType::Index:
 			case CommandParameterType::Integer:
 			case CommandParameterType::IndexInteger:
-				OutputBufferIndex += sprintf(OutputBuffer + OutputBufferIndex,"%i",CurrentCommand.Parameter.IntegerValue);
+				OutputBufferIndex += sprintf(OutputBuffer + OutputBufferIndex,"%i",(int)(CurrentCommand.Parameter.IntegerValue));
 				break;
 			case CommandParameterType::Bool:
 			case CommandParameterType::IndexBool:
-				if (CurrentCommand.CommandFormat.Parameter.BoolValue)
 				{
-					OutputBuffer[OutputBufferIndex] = '1';
+					if (CurrentCommand.Parameter.BoolValue)
+					{
+						OutputBuffer[OutputBufferIndex] = '1';
+					}
+					else
+					{
+						OutputBuffer[OutputBufferIndex] = '0';
+					}
+					OutputBufferIndex++;
+					break;
 				}
-				else
-				{
-					OutputBuffer[OutputBufferIndex] = '0';
-				}
-				OutputBufferIndex++;
-				break;
 			default:
 				break;
 		}
@@ -566,18 +882,20 @@ bool PILineStage::SendCommand()
 	OutputBufferIndex++;
 	OutputBuffer[OutputBufferIndex] = '\0';
 	SerialPort->write(OutputBuffer,OutputBufferIndex);
+	//Serial.print("<PISTAGE>(");
+	//Serial.print(OutputBuffer);
+	//Serial.print(")\n");
 	LastCommandSentTime = micros();
-	if ( (CurrentCommand.CommandFormat->PollAfter) && CurrentCommand.PollAfter )
-	{
-		PollAfterQueueEmpty = true;
-	}
-	if (CurrentCommand.CommandFormat->ReplyType != CommandReplyType::None)
+	if ( (CurrentCommand.CommandFormat->ReplyType != CommandReplyType::None) && CurrentCommand.Get )
 	{
 		ModeTransitionToWaitForReply();
+	}
+	else if (CurrentCommand.CommandFormat->PollAfter)
+	{
+		ModeTransitionToSendMovePoll();
 	}
 	else
 	{
 		ModeTransitionToIdle();
 	}
-	return Status;
 }
