@@ -9,6 +9,7 @@
 class PILineStage
 {
 	public:
+		typedef void ( *FinishedListener )();
 		enum class CommandType : uint8_t
 		{
 			None,
@@ -95,8 +96,8 @@ class PILineStage
 			uint8_t Axis;
 			//bool PollStatus;
 			CommandParameter Parameter;
+			FinishedListener CompleteCallback;
 		};
-		typedef void ( *FinishedListener )();
 		PILineStage(HardwareSerial* serial, int BaudRate); //Invoke with PILineStage(&SerialN);
 		bool IsBusy();
 		void Check();
@@ -106,10 +107,14 @@ class PILineStage
 		bool GetIsHoming();
 		bool SendHome(uint8_t Axis);
 		bool SendMoveAbs(uint8_t Axis, float Position);
-		bool SendGetPosition(uint8_t Axis);
+		bool SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL);
 		float GetPosition(uint8_t Axis);
+		void SendGetVelocity(uint8_t MotorIndex, FinishedListener Callback = NULL);
+		void SendSetVelocity(uint8_t MotorIndex, float VelocityToSet, FinishedListener Callback = NULL);
+		float GetVelocity(uint8_t Axis);
 		void SetFinishedCallback(FinishedListener Callback);
 		void SetHomedCallback(FinishedListener Callback);
+		void SetAxisCompleteCallback(uint8_t Axis, FinishedListener Callback);
 		void SetAxis1Callback(FinishedListener Callback);
 		void SetAxis2Callback(FinishedListener Callback);
 	private:
@@ -168,7 +173,6 @@ class PILineStage
 		FinishedListener Axis1Callback;
 		FinishedListener Axis2Callback;
 		CommandQueueEntry CurrentCommand;
-		uint32_t CurrentCommandTimeToComplete;
 		uint32_t LastWipeTime;
 		uint8_t ReplyByteCount;
 		char ReplyData[PILineReplyBufferCount];
@@ -202,5 +206,7 @@ class PILineStage
 		float PositionMin2;
 		float PositionMax1;
 		float PositionMax2;
+		float Velocity1;
+		float Velocity2;
 };
 #endif

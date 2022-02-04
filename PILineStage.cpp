@@ -41,7 +41,6 @@ PILineStage::PILineStage(HardwareSerial *serial, int BaudRate)
 	HomedCallback = NULL;
 	Axis1Callback = NULL;
 	Axis2Callback = NULL;
-	CurrentCommandTimeToComplete = 0;
 	ReplyByteCount = 0;
 	for (uint8_t Index = 0; Index < PILineReplyBufferCount; ++Index)
 	{
@@ -162,7 +161,7 @@ void PILineStage::CenterStage()
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
 }
-bool PILineStage::SendGetPosition(uint8_t Axis)
+bool PILineStage::SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Position;
@@ -170,6 +169,7 @@ bool PILineStage::SendGetPosition(uint8_t Axis)
 	CommandToQueue.Get = true;
 	CommandToQueue.Axis = Axis;
 	CommandToQueue.Parameter.BoolValue = false;
+	CommandToQueue.CompleteCallback = Callback;
 	//CommandToQueue.PollStatus = false;
 	Enqueue(CommandToQueue);
 	return true;
@@ -212,6 +212,46 @@ bool PILineStage::SendMoveAbs(uint8_t Axis, float Position)
 	}
 	return true;
 }
+bool PILineStage::SendSetVelocity(uint8_t Axis, float Velocity, FinishedListener Callback = NULL)
+{
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::Velocity;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = false;
+	CommandToQueue.Axis = Axis;
+	CommandToQueue.Parameter.FloatValue = Velocity;
+	CommandToQueue.CompleteCallback = Callback;
+	Enqueue(CommandToQueue);
+	return true;
+}
+bool PILineStage::SendGetVelocity(uint8_t Axis, FinishedListener Callback = NULL)
+{
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::Velocity;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = Axis;
+	CommandToQueue.Parameter.BoolValue = false;
+	CommandToQueue.CompleteCallback = Callback;
+	//CommandToQueue.PollStatus = false;
+	Enqueue(CommandToQueue);
+	return true;
+}
+float PILineStage::GetVelocity(uint8_t Axis)
+{
+	if (Axis == 1)
+	{
+		return Velocity1;
+	}
+	else if (Axis == 2)
+	{
+		return Velocity2;
+	}
+	else
+	{
+		return 0;
+	}
+}
 void PILineStage::SetFinishedCallback(FinishedListener Callback)
 {
 	FinishedCallback = Callback;
@@ -219,6 +259,17 @@ void PILineStage::SetFinishedCallback(FinishedListener Callback)
 void PILineStage::SetHomedCallback(FinishedListener Callback)
 {
 	HomedCallback = Callback;
+}
+void PILineStage::SetAxisCompleteCallback(uint8_t Axis, FinishedListener Callback)
+{
+	if (Axis == 1)
+	{
+		SetAxis1Callback(Callback);
+	}
+	else if (Axis == 2)
+	{
+		SetAxis2Callback(Callback);
+	}
 }
 void PILineStage::SetAxis1Callback(FinishedListener Callback)
 {
@@ -323,6 +374,7 @@ void PILineStage::ClearCommandQueue()
 		CommandQueue[Index].Get = false;
 		CommandQueue[Index].Axis = 0;
 		CommandQueue[Index].Parameter.IntegerValue = 0;
+		CommandQueue[Index].CompleteCallback = NULL;
 		//CommandQueue[Index].PollStatus = false;
 	}
 	CommandQueueHead = 0;
@@ -374,6 +426,7 @@ void PILineStage::CommandQueuePut(CommandQueueEntry NewCommand)
 	CommandQueue[CommandQueueHead].Get = NewCommand.Get;
 	CommandQueue[CommandQueueHead].Axis = NewCommand.Axis;
 	CommandQueue[CommandQueueHead].Parameter = NewCommand.Parameter;
+	CommandQueue[CommandQueueHead].CompleteCallback = NewCommand.CompleteCallback;
 	//CommandQueue[CommandQueueHead].PollStatus = NewCommand.PollStatus;
 	CommandQueueAdvance();
 }
@@ -387,6 +440,7 @@ bool PILineStage::CommandQueuePullToCurrentCommand()
 		CurrentCommand.Get = CommandQueue[CommandQueueTail].Get;
 		CurrentCommand.Axis = CommandQueue[CommandQueueTail].Axis;
 		CurrentCommand.Parameter = CommandQueue[CommandQueueTail].Parameter;
+		CurrentCommand.CompleteCallback = CommandQueue[CommandQueueTail].CompleteCallback;
 		//CurrentCommand.PollStatus = CommandQueue[CommandQueueHead].PollStatus;
 		CommandQueueRetreat();
 		Status = true;
@@ -549,6 +603,10 @@ void PILineStage::ParseReply()
 	{
 		Serial.print("<PISTAGE>(Reply parse failed.)\n");
 	}
+	if (CurrentCommand.CompleteCallback != NULL)
+	{
+		CurrentCommand.CompleteCallback();
+	}
 }
 void PILineStage::UpdateInternalVariables(CommandParameter* Parameter)
 {
@@ -579,18 +637,30 @@ void PILineStage::UpdateInternalVariables(CommandParameter* Parameter)
 				}
 				break;
 			}
-			case (CommandType::PositionMax):
+		case (CommandType::PositionMax):
+			{
+				if (CurrentCommand.Axis == 1)
 				{
-					if (CurrentCommand.Axis == 1)
-					{
-						PositionMax1 = Parameter->FloatValue;
-					}
-					else if (CurrentCommand.Axis == 2)
-					{
-						PositionMax2 = Parameter->FloatValue;
-					}
-					break;
+					PositionMax1 = Parameter->FloatValue;
 				}
+				else if (CurrentCommand.Axis == 2)
+				{
+					PositionMax2 = Parameter->FloatValue;
+				}
+				break;
+			}
+		case (CommandType::Velocity):
+			{
+				if (CurrentCommand.Axis == 1)
+				{
+					Velocity1 = Parameter->FloatValue;
+				}
+				else if (CurrentCommand.Axis == 2)
+				{
+					Velocity2 = Parameter->FloatValue;
+				}
+				break;
+			}
 		default:
 			break;
 	}
