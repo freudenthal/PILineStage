@@ -112,6 +112,8 @@ class PILineStage
 		void SendGetVelocity(uint8_t MotorIndex, FinishedListener Callback = NULL);
 		void SendSetVelocity(uint8_t MotorIndex, float VelocityToSet, FinishedListener Callback = NULL);
 		float GetVelocity(uint8_t Axis);
+		void SendGetIsMoving(FinishedListener Callback = NULL);
+		bool IsMoving(uint8_t Axis);
 		void SetFinishedCallback(FinishedListener Callback);
 		void SetHomedCallback(FinishedListener Callback);
 		void SetAxisCompleteCallback(uint8_t Axis, FinishedListener Callback);

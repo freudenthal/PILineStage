@@ -161,6 +161,18 @@ void PILineStage::CenterStage()
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
 }
+bool PILineStage::SendGetIsMoving(FinishedListener Callback = NULL)
+{
+	CommandQueueEntry CommandToQueue;
+	CommandToQueue.Command = CommandType::RequestMotion;
+	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.Get = true;
+	CommandToQueue.Axis = 0;
+	CommandToQueue.Parameter.BoolValue = false;
+	CommandToQueue.CompleteCallback = Callback;
+	Enqueue(CommandToQueue);
+	return true;
+}
 bool PILineStage::SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL)
 {
 	CommandQueueEntry CommandToQueue;
@@ -251,6 +263,18 @@ float PILineStage::GetVelocity(uint8_t Axis)
 	{
 		return 0;
 	}
+}
+bool PILineStage::IsMoving(uint8_t Axis)
+{
+	if (Axis == 1)
+	{
+		return Axis1Moving;
+	}
+	else if (Axis == 2)
+	{
+		return Axis2Moving;
+	}
+	return false;
 }
 void PILineStage::SetFinishedCallback(FinishedListener Callback)
 {
@@ -691,7 +715,32 @@ bool PILineStage::ParseStatusRegister(CommandParameter* ParameterToWrite)
 }
 bool PILineStage::ParseMotionStatus(CommandParameter* ParameterToWrite)
 {
+	//0 - No axes in motion
+	//1 - Axis 1 is in motion
+	//2 - Axis 2 is in motion
+	//3 - Axis 1 and 2 are in motion
 	MotionByte = atoi(ReplyData);
+	switch (MotionByte)
+	{
+		case 0:
+			Axis1Moving = false;
+			Axis2Moving = false;
+			break;
+		case 1:
+			Axis1Moving = true;
+			Axis2Moving = false;
+			break;
+		case 2:
+			Axis1Moving = false;
+			Axis2Moving = true;
+			break;
+		case 3:
+			Axis1Moving = true;
+			Axis2Moving = true;
+			break;
+		default:
+			break;
+	}
 	ParameterToWrite->BoolValue = MotionByte == 0;
 	return true;
 }
@@ -880,7 +929,7 @@ void PILineStage::SendCommand()
 		memcpy(OutputBuffer,CurrentCommand.CommandFormat->CommandString,3);
 		OutputBufferIndex += 3;
 	}
-	if (CurrentCommand.Get)
+	if ( (CurrentCommand.CommandFormat->Category != CommandCategoryType::SingleCharacter) && CurrentCommand.Get)
 	{
 		OutputBuffer[OutputBufferIndex] = '?';
 		OutputBufferIndex++;
