@@ -48,6 +48,7 @@ PILineStage::PILineStage(HardwareSerial *serial, int BaudRate)
 	}
 	CurrentCommand.Command = CommandType::None;
 	CurrentCommand.CommandFormat = NULL;
+	CurrentCommand.CompleteCallback = NULL;
 	//CurrentCommand.PollStatus = false;
 	CurrentCommand.Get = false;
 	CurrentCommand.Axis = 0;
@@ -80,6 +81,10 @@ void PILineStage::Begin()
 	ClearCommandQueue();
 	Mode = ModeType::Idle;
 }
+void PILineStage::SetVerbose(bool VerboseToSet)
+{
+	Verbose = VerboseToSet;
+}
 void PILineStage::Home()
 {
 	Axis1Moving = true;
@@ -89,6 +94,7 @@ void PILineStage::Home()
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::RequestError;
 	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.CompleteCallback = NULL;
 	CommandToQueue.Get = true;
 	//CommandToQueue.PollStatus = false;
 	Enqueue(CommandToQueue);
@@ -122,6 +128,10 @@ void PILineStage::Home()
 	Enqueue(CommandToQueue);
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Homing.)\n");
+	}
 }
 void PILineStage::CenterStage()
 {
@@ -141,6 +151,7 @@ void PILineStage::CenterStage()
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Move;
 	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.CompleteCallback = NULL;
 	CommandToQueue.Get = false;
 	CommandToQueue.Axis = 1;
 	CommandToQueue.Parameter.FloatValue = Center1;
@@ -161,7 +172,7 @@ void PILineStage::CenterStage()
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
 }
-bool PILineStage::SendGetIsMoving(FinishedListener Callback = NULL)
+void PILineStage::SendGetIsMoving(FinishedListener Callback)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::RequestMotion;
@@ -171,9 +182,8 @@ bool PILineStage::SendGetIsMoving(FinishedListener Callback = NULL)
 	CommandToQueue.Parameter.BoolValue = false;
 	CommandToQueue.CompleteCallback = Callback;
 	Enqueue(CommandToQueue);
-	return true;
 }
-bool PILineStage::SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL)
+void PILineStage::SendGetPosition(uint8_t Axis, FinishedListener Callback)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Position;
@@ -184,7 +194,6 @@ bool PILineStage::SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL
 	CommandToQueue.CompleteCallback = Callback;
 	//CommandToQueue.PollStatus = false;
 	Enqueue(CommandToQueue);
-	return true;
 }
 float PILineStage::GetPosition(uint8_t Axis)
 {
@@ -201,11 +210,12 @@ float PILineStage::GetPosition(uint8_t Axis)
 		return 0;
 	}
 }
-bool PILineStage::SendMoveAbs(uint8_t Axis, float Position)
+void PILineStage::SendMoveAbs(uint8_t Axis, float Position)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Move;
 	CommandToQueue.CommandFormat = NULL;
+	CommandToQueue.CompleteCallback = NULL;
 	CommandToQueue.Get = false;
 	CommandToQueue.Axis = Axis;
 	CommandToQueue.Parameter.FloatValue = Position;
@@ -222,9 +232,8 @@ bool PILineStage::SendMoveAbs(uint8_t Axis, float Position)
 	{
 		Axis2Moving = true;
 	}
-	return true;
 }
-bool PILineStage::SendSetVelocity(uint8_t Axis, float Velocity, FinishedListener Callback = NULL)
+void PILineStage::SendSetVelocity(uint8_t Axis, float Velocity, FinishedListener Callback)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Velocity;
@@ -234,9 +243,8 @@ bool PILineStage::SendSetVelocity(uint8_t Axis, float Velocity, FinishedListener
 	CommandToQueue.Parameter.FloatValue = Velocity;
 	CommandToQueue.CompleteCallback = Callback;
 	Enqueue(CommandToQueue);
-	return true;
 }
-bool PILineStage::SendGetVelocity(uint8_t Axis, FinishedListener Callback = NULL)
+void PILineStage::SendGetVelocity(uint8_t Axis, FinishedListener Callback)
 {
 	CommandQueueEntry CommandToQueue;
 	CommandToQueue.Command = CommandType::Velocity;
@@ -247,7 +255,6 @@ bool PILineStage::SendGetVelocity(uint8_t Axis, FinishedListener Callback = NULL
 	CommandToQueue.CompleteCallback = Callback;
 	//CommandToQueue.PollStatus = false;
 	Enqueue(CommandToQueue);
-	return true;
 }
 float PILineStage::GetVelocity(uint8_t Axis)
 {
@@ -326,6 +333,8 @@ void PILineStage::Check()
 			CheckForErrorComplete();
 			break;
 		default:
+			Serial.print("<PILINEERROR>(Mode not recognized.)\n");
+			ModeTransitionToIdle();
 			break;
 	}
 }
@@ -490,6 +499,12 @@ void PILineStage::CheckForCommandReply()
 			}
 			else
 			{
+				if (Verbose)
+				{
+					Serial.print("[STVERB](Command reply: ");
+					Serial.print(ReplyData);
+					Serial.print(")\n");
+				}
 				ParseReply();
 				ModeTransitionToIdle();
 			}
@@ -536,11 +551,23 @@ void PILineStage::CheckForMoveComplete()
 				{
 					//PollAfterQueueEmpty = false;
 					//Serial.print("<PISTAGE>(Move complete.)");
+					if (Verbose)
+					{
+						Serial.print("[STVERB](Move reply idle: ");
+						Serial.print(ReplyData);
+						Serial.print(")\n");
+					}
 					ModeTransitionToIdle();
 				}
 				else
 				{
 					//Serial.print("<PISTAGE>(Moving.)");
+					if (Verbose)
+					{
+						Serial.print("[STVERB](Move reply busy: ");
+						Serial.print(ReplyData);
+						Serial.print(")\n");
+					}
 					ModeTransitionToSendMovePoll();
 				}
 			}
@@ -580,6 +607,12 @@ void PILineStage::CheckForErrorComplete()
 				{
 					Serial.print("<PISTAGE>(Error: ");
 					Serial.print(ErrorCode);
+					Serial.print(")\n");
+				}
+				if (Verbose)
+				{
+					Serial.print("[STVERB](Error check: ");
+					Serial.print(ReplyData);
 					Serial.print(")\n");
 				}
 				ModeTransitionToIdle();
@@ -622,6 +655,10 @@ void PILineStage::ParseReply()
 	if (Status)
 	{
 		UpdateInternalVariables(&ReturnParameter);
+		if (Verbose)
+		{
+			Serial.print("[STVERB](Updated internals.)\n");
+		}
 	}
 	else
 	{
@@ -630,6 +667,10 @@ void PILineStage::ParseReply()
 	if (CurrentCommand.CompleteCallback != NULL)
 	{
 		CurrentCommand.CompleteCallback();
+		if (Verbose)
+		{
+			Serial.print("[STVERB](Command callback fired.)\n");
+		}
 	}
 }
 void PILineStage::UpdateInternalVariables(CommandParameter* Parameter)
@@ -711,6 +752,16 @@ bool PILineStage::ParseStatusRegister(CommandParameter* ParameterToWrite)
 		Serial.print("<PISTAGE>(Status reply parse failed.)\n");
 	}
 	ParameterToWrite->IntegerValue = atoi(Buffer);
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Status register: ");
+		Serial.print(Status1);
+		Serial.print(",");
+		Serial.print(Status2);
+		Serial.print(",");
+		Serial.print(ParameterToWrite->IntegerValue);
+		Serial.print(")\n");
+	}
 	return Status;
 }
 bool PILineStage::ParseMotionStatus(CommandParameter* ParameterToWrite)
@@ -742,18 +793,44 @@ bool PILineStage::ParseMotionStatus(CommandParameter* ParameterToWrite)
 			break;
 	}
 	ParameterToWrite->BoolValue = MotionByte == 0;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Motion status: ");
+		Serial.print(Axis1Moving);
+		Serial.print(",");
+		Serial.print(Axis2Moving);
+		Serial.print(",");
+		Serial.print(ParameterToWrite->BoolValue);
+		Serial.print(")\n");
+	}
 	return true;
 }
 bool PILineStage::ParseReadyStatus(CommandParameter* ParameterToWrite)
 {
 	Ready = ReplyData[0] == 241;
 	ParameterToWrite->BoolValue = Ready;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Ready status: ");
+		Serial.print(Ready);
+		Serial.print(",");
+		Serial.print(ParameterToWrite->BoolValue);
+		Serial.print(")\n");
+	}
 	return true;
 }
 bool PILineStage::ParseErrorStatus(CommandParameter* ParameterToWrite)
 {
 	ErrorCode = atoi(ReplyData);
 	ParameterToWrite->IntegerValue = ErrorCode;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Error status: ");
+		Serial.print(ErrorCode);
+		Serial.print(",");
+		Serial.print(ParameterToWrite->IntegerValue);
+		Serial.print(")\n");
+	}
 	return true;
 }
 bool PILineStage::ParseIndexFloat(CommandParameter* ParameterToWrite)
@@ -767,6 +844,12 @@ bool PILineStage::ParseIndexFloat(CommandParameter* ParameterToWrite)
 	else
 	{
 		ParameterToWrite->FloatValue = atof(ReplyData + EqualSplit + 1);
+		if (Verbose)
+		{
+			Serial.print("[STVERB](Index float: ");
+			Serial.print(ParameterToWrite->FloatValue);
+			Serial.print(")\n");
+		}
 		return true;
 	}
 }
@@ -788,6 +871,12 @@ bool PILineStage::ParseIndexBool(CommandParameter* ParameterToWrite)
 		else
 		{
 			ParameterToWrite->BoolValue = false;
+		}
+		if (Verbose)
+		{
+			Serial.print("[STVERB](Index bool: ");
+			Serial.print(ParameterToWrite->BoolValue);
+			Serial.print(")\n");
 		}
 		return true;
 	}
@@ -816,6 +905,10 @@ void PILineStage::ModeTransitionToSendMovePoll()
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::SendMovePoll;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Transition: Send movement poll.)\n");
+	}
 }
 void PILineStage::ModeTransitionToRecieveMovePoll()
 {
@@ -823,12 +916,20 @@ void PILineStage::ModeTransitionToRecieveMovePoll()
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::RecieveMovePoll;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Transition: Receive movement poll.)\n");
+	}
 }
 void PILineStage::ModeTransitionToWaitForReply()
 {
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::WaitForReply;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Transition: Wait reply.)\n");
+	}
 }
 void PILineStage::ModeTransitionToCheckErrors()
 {
@@ -836,6 +937,10 @@ void PILineStage::ModeTransitionToCheckErrors()
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::SendErrorPoll;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Transition: Send error poll.)\n");
+	}
 }
 void PILineStage::ModeTransitionToReceiveErrors()
 {
@@ -843,6 +948,10 @@ void PILineStage::ModeTransitionToReceiveErrors()
 	memset(ReplyData, '\0', PILineReplyBufferCount);
 	ReplyByteCount = 0;
 	Mode = ModeType::ReceiveErrorPoll;
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Transition: Receive error poll.)\n");
+	}
 }
 void PILineStage::ModeTransitionToIdle()
 {
@@ -868,12 +977,20 @@ void PILineStage::ModeTransitionToIdle()
 				Busy = false;
 				FireCallbacks();
 				Mode = ModeType::Idle;
+				if (Verbose)
+				{
+					Serial.print("[STVERB](Transition: Idle with callbacks.)\n");
+				}
 			}
 		}
 	}
 	else
 	{
 		Mode = ModeType::Idle;
+		if (Verbose)
+		{
+			Serial.print("[STVERB](Transition: Idle send next.)\n");
+		}
 	}
 }
 void PILineStage::FireCallbacks()
@@ -1001,6 +1118,12 @@ void PILineStage::SendCommand()
 	OutputBufferIndex++;
 	OutputBuffer[OutputBufferIndex] = '\0';
 	SerialPort->write(OutputBuffer,OutputBufferIndex);
+	if (Verbose)
+	{
+		Serial.print("[STVERB](Send: ");
+		Serial.print(OutputBuffer);
+		Serial.print(")\n");
+	}
 	//Serial.print("<PISTAGE>(");
 	//Serial.print(OutputBuffer);
 	//Serial.print(")\n");

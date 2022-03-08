@@ -105,9 +105,9 @@ class PILineStage
 		void Home();
 		bool GetIsHomed();
 		bool GetIsHoming();
-		bool SendHome(uint8_t Axis);
-		bool SendMoveAbs(uint8_t Axis, float Position);
-		bool SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL);
+		void SendHome(uint8_t Axis);
+		void SendMoveAbs(uint8_t Axis, float Position);
+		void SendGetPosition(uint8_t Axis, FinishedListener Callback = NULL);
 		float GetPosition(uint8_t Axis);
 		void SendGetVelocity(uint8_t MotorIndex, FinishedListener Callback = NULL);
 		void SendSetVelocity(uint8_t MotorIndex, float VelocityToSet, FinishedListener Callback = NULL);
@@ -119,6 +119,7 @@ class PILineStage
 		void SetAxisCompleteCallback(uint8_t Axis, FinishedListener Callback);
 		void SetAxis1Callback(FinishedListener Callback);
 		void SetAxis2Callback(FinishedListener Callback);
+		void SetVerbose(bool VerboseToSet);
 	private:
 		void CheckCommandQueue();
 		void Enqueue(CommandQueueEntry CommandToQueue);
@@ -210,5 +211,6 @@ class PILineStage
 		float PositionMax2;
 		float Velocity1;
 		float Velocity2;
+		bool Verbose;
 };
 #endif
