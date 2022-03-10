@@ -74,12 +74,17 @@ PILineStage::PILineStage(HardwareSerial *serial, int BaudRate)
 	PositionMin2 = 0.0;
 	PositionMax1 = 0.0;
 	PositionMax2 = 0.0;
+	AutomaticPolling = true;
 	//PollAfterQueueEmpty = false;
 }
 void PILineStage::Begin()
 {
 	ClearCommandQueue();
 	Mode = ModeType::Idle;
+}
+void PILineStage::SetAutomaticPolling(bool PollingToSet)
+{
+	AutomaticPolling = PollingToSet;
 }
 void PILineStage::SetVerbose(bool VerboseToSet)
 {
@@ -112,7 +117,14 @@ void PILineStage::Home()
 	Enqueue(CommandToQueue);
 	CommandToQueue.Axis = 2;
 	Enqueue(CommandToQueue);
+	CommandToQueue.Command = CommandType::Velocity;
+	CommandToQueue.Parameter.FloatValue = 25.0;
+	CommandToQueue.Axis = 1;
+	Enqueue(CommandToQueue);
+	CommandToQueue.Axis = 2;
+	Enqueue(CommandToQueue);
 	CommandToQueue.Command = CommandType::GoHome;
+	CommandToQueue.Parameter.BoolValue = true;
 	CommandToQueue.Axis = 1;
 	Enqueue(CommandToQueue);
 	CommandToQueue.Axis = 2;
@@ -484,6 +496,7 @@ void PILineStage::CheckForCommandReply()
 {
 	if (SerialPort->available())
 	{
+		LastCommandSentTime = micros();
 		while(SerialPort->available())
 		{
 			char NewCharacter = SerialPort->read();
@@ -529,6 +542,7 @@ void PILineStage::CheckForMoveComplete()
 	if ( (micros() - PollTime > PollTimeMax) && (SerialPort->available()) )
 	{
 		PollTime = micros();
+		LastCommandSentTime = micros();
 		while(SerialPort->available())
 		{
 			char NewCharacter = SerialPort->read();
@@ -568,7 +582,14 @@ void PILineStage::CheckForMoveComplete()
 						Serial.print(ReplyData);
 						Serial.print(")\n");
 					}
-					ModeTransitionToSendMovePoll();
+					if (AutomaticPolling)
+					{
+						ModeTransitionToSendMovePoll();
+					}
+					else
+					{
+						ModeTransitionToIdle();
+					}
 				}
 			}
 		}
@@ -584,6 +605,7 @@ void PILineStage::CheckForErrorComplete()
 	if ( (micros() - PollTime > PollTimeMax) && (SerialPort->available()) )
 	{
 		PollTime = micros();
+		LastCommandSentTime = micros();
 		while(SerialPort->available())
 		{
 			char NewCharacter = SerialPort->read();
@@ -622,6 +644,14 @@ void PILineStage::CheckForErrorComplete()
 	else if ( (micros() - LastCommandSentTime) > CommandReplyTimeMax)
 	{
 		Serial.print("<PISTAGE>(No error status reply.)\n");
+		if (CurrentCommand.CompleteCallback != NULL)
+		{
+			CurrentCommand.CompleteCallback();
+			if (Verbose)
+			{
+				Serial.print("[STVERB](Command callback fired on failure.)\n");
+			}
+		}
 		ModeTransitionToIdle();
 	}
 }
@@ -960,7 +990,18 @@ void PILineStage::ModeTransitionToIdle()
 		if (CheckForErrors)
 		{
 			CheckForErrors = false;
-			ModeTransitionToCheckErrors();
+			if (AutomaticPolling)
+			{
+				ModeTransitionToCheckErrors();
+			}
+			else
+			{
+				Mode = ModeType::Idle;
+				if (Verbose)
+				{
+					Serial.print("[STVERB](Transition: Idle without error checks.)\n");
+				}
+			}
 		}
 		else
 		{
@@ -1132,12 +1173,20 @@ void PILineStage::SendCommand()
 	{
 		ModeTransitionToWaitForReply();
 	}
-	else if (CurrentCommand.CommandFormat->PollAfter)
+	else if (CurrentCommand.CommandFormat->PollAfter && AutomaticPolling)
 	{
 		ModeTransitionToSendMovePoll();
 	}
 	else
 	{
+		if (CurrentCommand.CompleteCallback != NULL)
+		{
+			if (Verbose)
+			{
+				Serial.print("[STVERB](Fire callback without reply.)\n");
+			}
+			CurrentCommand.CompleteCallback();
+		}
 		ModeTransitionToIdle();
 	}
 }

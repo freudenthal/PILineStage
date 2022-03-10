@@ -120,6 +120,7 @@ class PILineStage
 		void SetAxis1Callback(FinishedListener Callback);
 		void SetAxis2Callback(FinishedListener Callback);
 		void SetVerbose(bool VerboseToSet);
+		void SetAutomaticPolling(bool PollingToSet);
 	private:
 		void CheckCommandQueue();
 		void Enqueue(CommandQueueEntry CommandToQueue);
@@ -193,6 +194,7 @@ class PILineStage
 		bool CheckForErrors;
 		bool Axis1Moving;
 		bool Axis2Moving;
+		bool AutomaticPolling;
 		uint32_t PollTime;
 		uint32_t ErrorCode;
 		uint32_t LastCommandSentTime;
